@@ -1,0 +1,31 @@
+aws_region  = "us-east-1"
+project_name = "wistia-analytics"
+environment  = "dev"
+
+# Leave empty to generate account-scoped names, or set explicit globally unique bucket names.
+data_lake_bucket_name = ""
+artifact_bucket_name  = ""
+
+# If you already created this secret manually, set create_wistia_secret_placeholder=false.
+wistia_secret_name = "wistia-api-secret"
+create_wistia_secret_placeholder = true
+
+# Disabled by default. Enable after a successful manual Step Functions run.
+schedule_enabled = false
+schedule_expression = "cron(0 1 * * ? *)"
+schedule_timezone   = "America/Los_Angeles"
+
+# Optional Redshift Serverless. If false, provide existing workgroup/db/secret ARN for the loader Lambda.
+create_redshift_serverless = false
+redshift_workgroup_name = "wistia-analytics-dev-wg"
+redshift_database_name  = "dev"
+redshift_secret_arn     = ""
+
+# Only used when create_redshift_serverless=true. Override locally; do not commit real values.
+redshift_admin_username = "admin"
+redshift_admin_password = "replace-with-strong-password"
+
+glue_worker_type       = "G.1X"
+glue_number_of_workers = 2
+lambda_timeout_seconds = 900
+lambda_memory_mb       = 512

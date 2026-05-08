@@ -1,0 +1,19 @@
+__pycache__/
+*.pyc
+.env
+.env.*
+!.env.example
+!.env.*.example
+.venv/
+.DS_Store
+*.zip
+.streamlit/secrets.toml
+
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+!terraform.tfvars.example
+crash.log
+*.tfplan

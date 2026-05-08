@@ -1,0 +1,35 @@
+name: Terraform Plan
+
+on:
+  pull_request:
+    paths:
+      - 'infra/terraform/**'
+
+jobs:
+  terraform-plan:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+
+      # Configure OIDC role before enabling this in production.
+      # - uses: aws-actions/configure-aws-credentials@v4
+      #   with:
+      #     role-to-assume: ${{ secrets.AWS_GITHUB_ACTIONS_ROLE_ARN }}
+      #     aws-region: us-east-1
+
+      - name: Terraform fmt
+        working-directory: infra/terraform/envs/dev
+        run: terraform fmt -check -recursive
+
+      - name: Terraform init without backend
+        working-directory: infra/terraform/envs/dev
+        run: terraform init -backend=false
+
+      - name: Terraform validate
+        working-directory: infra/terraform/envs/dev
+        run: terraform validate

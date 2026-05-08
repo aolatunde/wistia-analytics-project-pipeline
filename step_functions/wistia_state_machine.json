@@ -1,0 +1,506 @@
+{
+  "Comment": "Wistia analytics orchestration",
+  "StartAt": "InitializeRunContext",
+  "States": {
+    "InitializeRunContext": {
+      "Type": "Pass",
+      "Parameters": {
+        "load_date.$": "States.ArrayGetItem(States.StringSplit($$.Execution.StartTime, 'T'), 0)",
+        "run_timestamp.$": "$$.Execution.StartTime",
+        "execution_id.$": "$$.Execution.Id",
+        "watermark_table": "wistia_pipeline_watermarks"
+      },
+      "Next": "ReadMetadataWatermark"
+    },
+    "ReadMetadataWatermark": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::dynamodb:getItem",
+      "Parameters": {
+        "TableName.$": "$.watermark_table",
+        "Key": {
+          "dataset": {
+            "S": "media_metadata"
+          }
+        },
+        "ConsistentRead": true
+      },
+      "ResultPath": "$.metadata_watermark",
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "Next": "PipelineFailed"
+        }
+      ],
+      "Next": "ExtractMetadata"
+    },
+    "ExtractMetadata": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "wistia-lambda-metadata-api-extractor",
+        "Payload": {
+          "load_date.$": "$.load_date",
+          "last_success_watermark.$": "$.metadata_watermark.Item.last_success_watermark.S"
+        }
+      },
+      "ResultPath": "$.metadata_result",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "States.TaskFailed"
+          ],
+          "IntervalSeconds": 5,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "Next": "PipelineFailed"
+        }
+      ],
+      "Next": "ReadEngagementWatermark"
+    },
+    "ReadEngagementWatermark": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::dynamodb:getItem",
+      "Parameters": {
+        "TableName.$": "$.watermark_table",
+        "Key": {
+          "dataset": {
+            "S": "media_engagement"
+          }
+        },
+        "ConsistentRead": true
+      },
+      "ResultPath": "$.engagement_watermark",
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "Next": "PipelineFailed"
+        }
+      ],
+      "Next": "ExtractMediaEngagement"
+    },
+    "ExtractMediaEngagement": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "media_engagement_lambda_function",
+        "Payload": {
+          "load_date.$": "$.load_date",
+          "last_success_watermark.$": "$.engagement_watermark.Item.last_success_watermark.S"
+        }
+      },
+      "ResultPath": "$.media_engagement_result",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "States.TaskFailed"
+          ],
+          "IntervalSeconds": 5,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "Next": "PipelineFailed"
+        }
+      ],
+      "Next": "RunSilverJobs"
+    },
+    "RunSilverJobs": {
+      "Type": "Parallel",
+      "ResultPath": "$.silver_results",
+      "Branches": [
+        {
+          "StartAt": "SilverMediaMetadata",
+          "States": {
+            "SilverMediaMetadata": {
+              "Type": "Task",
+              "Resource": "arn:aws:states:::glue:startJobRun.sync",
+              "Parameters": {
+                "JobName": "wistia-bronze-to-silver-media-metadata",
+                "Arguments": {
+                  "--load_date.$": "$.load_date"
+                }
+              },
+              "Retry": [
+                {
+                  "ErrorEquals": [
+                    "States.TaskFailed"
+                  ],
+                  "IntervalSeconds": 30,
+                  "MaxAttempts": 2,
+                  "BackoffRate": 2
+                }
+              ],
+              "End": true
+            }
+          }
+        },
+        {
+          "StartAt": "SilverMediaEngagement",
+          "States": {
+            "SilverMediaEngagement": {
+              "Type": "Task",
+              "Resource": "arn:aws:states:::glue:startJobRun.sync",
+              "Parameters": {
+                "JobName": "wistia_silver_media_engagement",
+                "Arguments": {
+                  "--load_date.$": "$.load_date"
+                }
+              },
+              "Retry": [
+                {
+                  "ErrorEquals": [
+                    "States.TaskFailed"
+                  ],
+                  "IntervalSeconds": 30,
+                  "MaxAttempts": 2,
+                  "BackoffRate": 2
+                }
+              ],
+              "End": true
+            }
+          }
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "Next": "PipelineFailed"
+        }
+      ],
+      "Next": "RunGoldJobs"
+    },
+    "RunGoldJobs": {
+      "Type": "Parallel",
+      "ResultPath": "$.gold_results",
+      "Branches": [
+        {
+          "StartAt": "GoldDimMedia",
+          "States": {
+            "GoldDimMedia": {
+              "Type": "Task",
+              "Resource": "arn:aws:states:::glue:startJobRun.sync",
+              "Parameters": {
+                "JobName": "dim_media_silver_to_gold",
+                "Arguments": {
+                  "--load_date.$": "$.load_date"
+                }
+              },
+              "Retry": [
+                {
+                  "ErrorEquals": [
+                    "States.TaskFailed"
+                  ],
+                  "IntervalSeconds": 30,
+                  "MaxAttempts": 2,
+                  "BackoffRate": 2
+                }
+              ],
+              "End": true
+            }
+          }
+        },
+        {
+          "StartAt": "GoldMediaEngagement",
+          "States": {
+            "GoldMediaEngagement": {
+              "Type": "Task",
+              "Resource": "arn:aws:states:::glue:startJobRun.sync",
+              "Parameters": {
+                "JobName": "wistia_gold_media_engagement",
+                "Arguments": {
+                  "--load_date.$": "$.load_date"
+                }
+              },
+              "Retry": [
+                {
+                  "ErrorEquals": [
+                    "States.TaskFailed"
+                  ],
+                  "IntervalSeconds": 30,
+                  "MaxAttempts": 2,
+                  "BackoffRate": 2
+                }
+              ],
+              "End": true
+            }
+          }
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "Next": "PipelineFailed"
+        }
+      ],
+      "Next": "RunPostGoldJobs"
+    },
+    "RunPostGoldJobs": {
+      "Type": "Parallel",
+      "ResultPath": "$.post_gold_results",
+      "Branches": [
+        {
+          "StartAt": "RunReportLayer1",
+          "States": {
+            "RunReportLayer1": {
+              "Type": "Task",
+              "Resource": "arn:aws:states:::glue:startJobRun.sync",
+              "Parameters": {
+                "JobName": "gold_video_engagement_reporting",
+                "Arguments": {
+                  "--load_date.$": "$.load_date"
+                }
+              },
+              "Retry": [
+                {
+                  "ErrorEquals": [
+                    "States.TaskFailed"
+                  ],
+                  "IntervalSeconds": 30,
+                  "MaxAttempts": 2,
+                  "BackoffRate": 2
+                }
+              ],
+              "End": true
+            }
+          }
+        },
+        {
+          "StartAt": "RunRetentionCurve",
+          "States": {
+            "RunRetentionCurve": {
+              "Type": "Task",
+              "Resource": "arn:aws:states:::glue:startJobRun.sync",
+              "Parameters": {
+                "JobName": "wistia_report_video_retention_curve",
+                "Arguments": {
+                  "--load_date.$": "$.load_date"
+                }
+              },
+              "Retry": [
+                {
+                  "ErrorEquals": [
+                    "States.TaskFailed"
+                  ],
+                  "IntervalSeconds": 30,
+                  "MaxAttempts": 2,
+                  "BackoffRate": 2
+                }
+              ],
+              "End": true
+            }
+          }
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "Next": "PipelineFailed"
+        }
+      ],
+      "Next": "RunFinalReportJobs"
+    },
+    "RunFinalReportJobs": {
+      "Type": "Parallel",
+      "ResultPath": "$.final_report_results",
+      "Branches": [
+        {
+          "StartAt": "ReportCampaignPerformance",
+          "States": {
+            "ReportCampaignPerformance": {
+              "Type": "Task",
+              "Resource": "arn:aws:states:::glue:startJobRun.sync",
+              "Parameters": {
+                "JobName": "wistia_report_campaign_performance",
+                "Arguments": {
+                  "--load_date.$": "$.load_date"
+                }
+              },
+              "Retry": [
+                {
+                  "ErrorEquals": [
+                    "States.TaskFailed"
+                  ],
+                  "IntervalSeconds": 30,
+                  "MaxAttempts": 2,
+                  "BackoffRate": 2
+                }
+              ],
+              "End": true
+            }
+          }
+        },
+        {
+          "StartAt": "ReportVideoPerformanceOverview",
+          "States": {
+            "ReportVideoPerformanceOverview": {
+              "Type": "Task",
+              "Resource": "arn:aws:states:::glue:startJobRun.sync",
+              "Parameters": {
+                "JobName": "wistia_report_video_performance_overview",
+                "Arguments": {
+                  "--load_date.$": "$.load_date"
+                }
+              },
+              "Retry": [
+                {
+                  "ErrorEquals": [
+                    "States.TaskFailed"
+                  ],
+                  "IntervalSeconds": 30,
+                  "MaxAttempts": 2,
+                  "BackoffRate": 2
+                }
+              ],
+              "End": true
+            }
+          }
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "Next": "PipelineFailed"
+        }
+      ],
+      "Next": "LoadToRedshift"
+    },
+    "LoadToRedshift": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "wistia_redshift_loader_lambda",
+        "Payload": {
+          "load_date.$": "$.load_date"
+        }
+      },
+      "ResultPath": "$.redshift_load_result",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "States.TaskFailed"
+          ],
+          "IntervalSeconds": 10,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "Next": "PipelineFailed"
+        }
+      ],
+      "Next": "PersistMetadataWatermark"
+    },
+    "PersistMetadataWatermark": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::dynamodb:updateItem",
+      "Parameters": {
+        "TableName.$": "$.watermark_table",
+        "Key": {
+          "dataset": {
+            "S": "media_metadata"
+          }
+        },
+        "UpdateExpression": "SET last_success_watermark = :w, last_run_status = :s, updated_at = :u",
+        "ExpressionAttributeValues": {
+          ":w": {
+            "S.$": "$.metadata_result.Payload.max_extracted_watermark"
+          },
+          ":s": {
+            "S": "SUCCEEDED"
+          },
+          ":u": {
+            "S.$": "$.run_timestamp"
+          }
+        }
+      },
+      "ResultPath": "$.persist_metadata_result",
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "Next": "PipelineFailed"
+        }
+      ],
+      "Next": "PersistEngagementWatermark"
+    },
+    "PersistEngagementWatermark": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::dynamodb:updateItem",
+      "Parameters": {
+        "TableName.$": "$.watermark_table",
+        "Key": {
+          "dataset": {
+            "S": "media_engagement"
+          }
+        },
+        "UpdateExpression": "SET last_success_watermark = :w, last_run_status = :s, updated_at = :u",
+        "ExpressionAttributeValues": {
+          ":w": {
+            "S.$": "$.media_engagement_result.Payload.max_extracted_watermark"
+          },
+          ":s": {
+            "S": "SUCCEEDED"
+          },
+          ":u": {
+            "S.$": "$.run_timestamp"
+          }
+        }
+      },
+      "ResultPath": "$.persist_engagement_result",
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "Next": "PipelineFailed"
+        }
+      ],
+      "Next": "PipelineSucceeded"
+    },
+    "PipelineSucceeded": {
+      "Type": "Succeed"
+    },
+    "PipelineFailed": {
+      "Type": "Fail",
+      "Cause": "Wistia pipeline failed"
+    }
+  }
+}
